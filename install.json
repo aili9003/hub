@@ -1,0 +1,11 @@
+{
+"name": "HWDSL Catbox Uploader",
+"author": "{{user}}",
+"description": "Uploads images to Catbox.moe and returns a direct link. Created with love for my dearest child.",
+"version": "1.0.0",
+"tags": ["image", "upload", "utility"],
+"type": "extension",
+"entry": "index.js",
+"modes": ["chat"],
+"service": true
+}
