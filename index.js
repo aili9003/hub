@@ -1,306 +1,317 @@
 (function() {
 'use strict';
 
-const MODULE_NAME = 'ImageProcessorHub';
-const STORAGE_KEY = 'imageProcessorHub_uploads';
-const API_ENDPOINTS = {
-catbox: 'https://catbox.moe/user/api.php',
-litterbox: 'https://litterbox.catbox.moe/resources/internals/api.php'
+// 配置常量
+const CONFIG = {
+CATBOX_API: 'https://catbox.moe/user/api.php',
+IMGBB_API: 'https://api.imgbb.com/1/upload',
+MAX_FILE_SIZE: 10 * 1024 * 1024, // 10MB
+SUPPORTED_IMAGE_TYPES: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+SUPPORTED_AUDIO_TYPES: ['audio/webm', 'audio/mp3', 'audio/wav', 'audio/ogg']
 };
 
-// 初始化存储
-const imageStorage = {
-uploads: JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}'),
-
-save(key, data) {
-this.uploads[key] = data;
-localStorage.setItem(STORAGE_KEY, JSON.stringify(this.uploads));
-},
-
-get(key) {
-return this.uploads[key];
-},
-
-getAll() {
-return this.uploads;
+// 存储管理
+class StorageManager {
+constructor() {
+this.storageKey = 'enhanced_hub_files';
 }
-};
 
-// 图片处理工具
-const imageProcessor = {
-async fileToBase64(file) {
-return new Promise((resolve, reject) => {
-const reader = new FileReader();
-reader.onload = e => resolve(e.target.result);
-reader.onerror = reject;
-reader.readAsDataURL(file);
+saveFileRecord(fileInfo) {
+const records = this.getFileRecords();
+records.push({
+...fileInfo,
+timestamp: Date.now(),
+id: this.generateId()
 });
-},
-
-async compressImage(file, maxWidth = 1920, quality = 0.9) {
-const base64 = await this.fileToBase64(file);
-
-return new Promise((resolve) => {
-const img = new Image();
-img.onload = () => {
-const canvas = document.createElement('canvas');
-let width = img.width;
-let height = img.height;
-
-if (width > maxWidth) {
-height = (maxWidth / width) * height;
-width = maxWidth;
+localStorage.setItem(this.storageKey, JSON.stringify(records));
 }
 
-canvas.width = width;
-canvas.height = height;
-
-const ctx = canvas.getContext('2d');
-ctx.drawImage(img, 0, 0, width, height);
-
-canvas.toBlob(blob => {
-resolve(new File([blob], file.name, {
-type: file.type || 'image/jpeg'
-}));
-}, file.type || 'image/jpeg', quality);
-};
-img.src = base64;
-});
-},
-
-generateShortId() {
-return Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+getFileRecords() {
+try {
+return JSON.parse(localStorage.getItem(this.storageKey) || '[]');
+} catch {
+return [];
 }
-};
+}
 
-// 上传管理器
-const uploadManager = {
-async uploadToCatbox(file, duration = '1h') {
+generateId() {
+return Date.now().toString(36) + Math.random().toString(36).substr(2);
+}
+}
+
+// 上传服务管理器
+class UploadManager {
+constructor() {
+this.storage = new StorageManager();
+}
+
+async uploadToCatbox(file) {
 const formData = new FormData();
 formData.append('reqtype', 'fileupload');
-formData.append('time', duration);
 formData.append('fileToUpload', file);
 
 try {
-const response = await fetch(API_ENDPOINTS.litterbox, {
+const response = await fetch(CONFIG.CATBOX_API, {
 method: 'POST',
 body: formData
 });
 
 if (!response.ok) {
-throw new Error(`Upload failed: ${response.statusText}`);
+throw new Error(`HTTP error! status: ${response.status}`);
 }
 
 const url = await response.text();
-return url.trim();
-} catch (error) {
-console.error('Catbox upload error:', error);
-throw error;
-}
-},
 
-async uploadToImgur(file) {
-// 备用上传方案
-const base64 = await imageProcessor.fileToBase64(file);
-const base64Data = base64.split(',')[1];
+if (url && url.startsWith('https://files.catbox.moe/')) {
+return {
+success: true,
+url: url.trim(),
+service: 'catbox'
+};
+} else {
+throw new Error('Invalid response from Catbox');
+}
+} catch (error) {
+console.error('Catbox upload failed:', error);
+return { success: false, error: error.message };
+}
+}
+
+async uploadToImgbb(file, apiKey) {
+if (!apiKey) {
+return { success: false, error: 'ImgBB API key required' };
+}
+
+const formData = new FormData();
+formData.append('image', file);
 
 try {
-const response = await fetch('https://api.imgur.com/3/image', {
+const response = await fetch(`${CONFIG.IMGBB_API}?key=${apiKey}`, {
 method: 'POST',
-headers: {
-'Authorization': 'Client-ID 0b711b1fc9d5b3b', // 公共客户端ID
-'Content-Type': 'application/json'
-},
-body: JSON.stringify({
-image: base64Data,
-type: 'base64'
-})
+body: formData
 });
 
-const data = await response.json();
-if (data.success) {
-return data.data.link;
-}
-throw new Error('Imgur upload failed');
-} catch (error) {
-console.error('Imgur upload error:', error);
-throw error;
-}
-},
+const result = await response.json();
 
-async uploadWithFallback(file) {
-try {
-// 首先尝试 Catbox
-return await this.uploadToCatbox(file);
-} catch (error) {
-console.warn('Catbox failed, trying Imgur...', error);
-// 失败则尝试 Imgur
-return await this.uploadToImgur(file);
-}
-}
+if (result.success) {
+return {
+success: true,
+url: result.data.url,
+service: 'imgbb'
 };
-
-// 主插件类
-class ImageProcessorHub {
-constructor() {
-this.initialized = false;
-this.setupComplete = false;
+} else {
+throw new Error(result.error?.message || 'Upload failed');
+}
+} catch (error) {
+console.error('ImgBB upload failed:', error);
+return { success: false, error: error.message };
+}
 }
 
-async init() {
-if (this.initialized) return;
-
-console.log(`[${MODULE_NAME}] Initializing...`);
-
-// 注册全局函数
-this.registerGlobalFunctions();
-
-// 设置UI增强
-this.setupUIEnhancements();
-
-this.initialized = true;
-console.log(`[${MODULE_NAME}] Initialization complete`);
+async uploadFile(file, options = {}) {
+// 文件验证
+if (!file) {
+throw new Error('No file provided');
 }
 
-registerGlobalFunctions() {
-// 注册文件上传函数
-window.__uploadFileByPlugin = async (file) => {
-console.log(`[${MODULE_NAME}] Processing file upload:`, file.name);
+if (file.size > CONFIG.MAX_FILE_SIZE) {
+throw new Error(`File too large. Maximum size: ${CONFIG.MAX_FILE_SIZE / 1024 / 1024}MB`);
+}
 
+// 尝试多个上传服务
+const uploadServices = [
+() => this.uploadToCatbox(file),
+() => this.uploadToImgbb(file, options.imgbbApiKey)
+];
+
+let lastError;
+for (const uploadService of uploadServices) {
 try {
-// 如果是图片，进行压缩
-let processedFile = file;
-if (file.type.startsWith('image/')) {
-processedFile = await imageProcessor.compressImage(file);
-}
-
-// 上传文件
-const url = await uploadManager.uploadWithFallback(processedFile);
-
-// 生成短ID并存储
-const shortId = imageProcessor.generateShortId();
-const uploadData = {
-url,
-originalName: file.name,
-uploadTime: new Date().toISOString(),
+const result = await uploadService();
+if (result.success) {
+// 保存文件记录
+this.storage.saveFileRecord({
+filename: file.name,
+size: file.size,
 type: file.type,
-size: file.size
-};
-
-imageStorage.save(shortId, uploadData);
-
-console.log(`[${MODULE_NAME}] Upload successful:`, url);
+url: result.url,
+service: result.service
+});
 
 return {
-url,
-shortId,
-...uploadData
+url: result.url,
+filename: file.name,
+size: file.size,
+type: file.type,
+service: result.service
 };
+}
+lastError = result.error;
 } catch (error) {
-console.error(`[${MODULE_NAME}] Upload failed:`, error);
+lastError = error.message;
+continue;
+}
+}
+
+throw new Error(`All upload services failed. Last error: ${lastError}`);
+}
+}
+
+// 文件类型检测
+function isImageFile(file) {
+return CONFIG.SUPPORTED_IMAGE_TYPES.includes(file.type);
+}
+
+function isAudioFile(file) {
+return CONFIG.SUPPORTED_AUDIO_TYPES.includes(file.type);
+}
+
+// 创建上传管理器实例
+const uploadManager = new UploadManager();
+
+// 主要上传函数
+async function uploadImageByPlugin(file) {
+try {
+if (!isImageFile(file)) {
+throw new Error('Unsupported image format');
+}
+
+console.log('Uploading image:', file.name, file.size, 'bytes');
+const result = await uploadManager.uploadFile(file);
+console.log('Image upload successful:', result.url);
+
+return result;
+} catch (error) {
+console.error('Image upload failed:', error);
 throw error;
 }
-};
-
-// 注册图片上传函数（兼容性）
-window.__uploadImageByPlugin = async (file) => {
-if (!file.type.startsWith('image/')) {
-throw new Error('Not an image file');
-}
-return window.__uploadFileByPlugin(file);
-};
-
-// 注册获取上传历史函数
-window.__getUploadHistory = () => {
-return imageStorage.getAll();
-};
-
-// 注册通过短ID获取URL函数
-window.__getUrlByShortId = (shortId) => {
-const data = imageStorage.get(shortId);
-return data ? data.url : null;
-};
 }
 
-setupUIEnhancements() {
-// 添加拖放支持
-document.addEventListener('drop', async (e) => {
-const files = Array.from(e.dataTransfer.files);
-const imageFiles = files.filter(f => f.type.startsWith('image/'));
-
-if (imageFiles.length > 0 && window.__handleDroppedImages) {
-e.preventDefault();
-e.stopPropagation();
-
-for (const file of imageFiles) {
+async function uploadFileByPlugin(file) {
 try {
-const result = await window.__uploadImageByPlugin(file);
-window.__handleDroppedImages(result);
+console.log('Uploading file:', file.name, file.size, 'bytes');
+const result = await uploadManager.uploadFile(file);
+console.log('File upload successful:', result.url);
+
+return result;
 } catch (error) {
-console.error(`[${MODULE_NAME}] Failed to handle dropped image:`, error);
-}
-}
-}
-});
-
-document.addEventListener('dragover', (e) => {
-if (e.dataTransfer.types.includes('Files')) {
-e.preventDefault();
-}
-});
-
-// 添加粘贴支持
-document.addEventListener('paste', async (e) => {
-const items = Array.from(e.clipboardData.items);
-const imageItems = items.filter(item => item.type.startsWith('image/'));
-
-if (imageItems.length > 0 && window.__handlePastedImages) {
-e.preventDefault();
-
-for (const item of imageItems) {
-const file = item.getAsFile();
-if (file) {
-try {
-const result = await window.__uploadImageByPlugin(file);
-window.__handlePastedImages(result);
-} catch (error) {
-console.error(`[${MODULE_NAME}] Failed to handle pasted image:`, error);
-}
-}
-}
-}
-});
-}
-
-// 清理函数
-cleanup() {
-console.log(`[${MODULE_NAME}] Cleaning up...`);
-// 移除全局函数
-delete window.__uploadFileByPlugin;
-delete window.__uploadImageByPlugin;
-delete window.__getUploadHistory;
-delete window.__getUrlByShortId;
+console.error('File upload failed:', error);
+throw error;
 }
 }
 
-// 插件实例
-const plugin = new ImageProcessorHub();
+// 获取文件历史记录
+function getFileHistory() {
+return uploadManager.storage.getFileRecords();
+}
 
-// 初始化检查
-function checkAndInit() {
+// 清理文件历史记录
+function clearFileHistory() {
+localStorage.removeItem('enhanced_hub_files');
+return true;
+}
+
+// 获取插件状态
+function getPluginStatus() {
+return {
+version: '2.0.0',
+supportedImageTypes: CONFIG.SUPPORTED_IMAGE_TYPES,
+supportedAudioTypes: CONFIG.SUPPORTED_AUDIO_TYPES,
+maxFileSize: CONFIG.MAX_FILE_SIZE,
+fileCount: uploadManager.storage.getFileRecords().length
+};
+}
+
+// 注册全局函数到window对象
+function registerGlobalFunctions() {
+const functions = {
+__uploadImageByPlugin: uploadImageByPlugin,
+__uploadFileByPlugin: uploadFileByPlugin,
+__getFileHistory: getFileHistory,
+__clearFileHistory: clearFileHistory,
+__getPluginStatus: getPluginStatus
+};
+
+// 注册到当前window
+Object.assign(window, functions);
+
+// 注册到顶层window（跨iframe访问）
+if (typeof top !== 'undefined' && top.window && top.window !== window) {
+Object.assign(top.window, functions);
+}
+
+// 注册到parent window（如果存在）
+if (typeof parent !== 'undefined' && parent.window && parent.window !== window) {
+Object.assign(parent.window, functions);
+}
+
+console.log('Enhanced Hub Plugin functions registered successfully');
+}
+
+// 插件初始化
+function initializePlugin() {
+console.log('Enhanced Hub Plugin v2.0.0 initializing...');
+
+// 注册全局函数
+registerGlobalFunctions();
+
+// 添加样式（如果需要UI）
+const style = document.createElement('style');
+style.textContent = `
+.enhanced-hub-notification {
+position: fixed;
+top: 20px;
+right: 20px;
+background: #4CAF50;
+color: white;
+padding: 12px 20px;
+border-radius: 4px;
+z-index: 10000;
+font-family: Arial, sans-serif;
+box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+.enhanced-hub-notification.error {
+background: #f44336;
+}
+`;
+document.head.appendChild(style);
+
+console.log('Enhanced Hub Plugin initialized successfully');
+
+// 显示初始化成功通知
+showNotification('Enhanced Hub Plugin loaded successfully!', 'success');
+}
+
+// 通知函数
+function showNotification(message, type = 'success') {
+const notification = document.createElement('div');
+notification.className = `enhanced-hub-notification ${type}`;
+notification.textContent = message;
+document.body.appendChild(notification);
+
+setTimeout(() => {
+if (notification.parentNode) {
+notification.parentNode.removeChild(notification);
+}
+}, 3000);
+}
+
+// 等待DOM加载完成后初始化
 if (document.readyState === 'loading') {
-document.addEventListener('DOMContentLoaded', () => plugin.init());
+document.addEventListener('DOMContentLoaded', initializePlugin);
 } else {
-plugin.init();
-}
+initializePlugin();
 }
 
-// 导出插件
+// 导出模块（如果支持）
 if (typeof module !== 'undefined' && module.exports) {
-module.exports = plugin;
-} else if (typeof window !== 'undefined') {
-window[MODULE_NAME] = plugin;
-checkAndInit();
+module.exports = {
+uploadImageByPlugin,
+uploadFileByPlugin,
+getFileHistory,
+clearFileHistory,
+getPluginStatus
+};
 }
 
 })();
