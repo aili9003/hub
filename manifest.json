@@ -1,13 +1,19 @@
 {
-"id": "image-processor-hub",
-"displayName": "海王的胜利图床",
-"description": "Advanced image processing and hosting solution for SillyTavern",
-"author": "海王的胜利",
+"name": "海王的胜利图床",
 "version": "1.0.0",
-"homePage": "https://github.com/aili9003/hub",
-"url": "https://github.com/aili9003/hub/main/index.js",
-"tags": ["image", "upload", "processing"],
-"requirements": {
-"sillyTavernVersion": ">=1.10.0"
+"description": "Enhanced plugin with image upload and file management capabilities",
+"author": "海王的胜利",
+"main": "index.js",
+"permissions": [
+"storage",
+"http",
+"filesystem"
+],
+"api_version": "1.0.0",
+"dependencies": {},
+"settings": {
+"upload_service": "catbox",
+"local_server_port": 8080,
+"max_file_size": 10485760
 }
 }
